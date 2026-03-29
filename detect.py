@@ -19,11 +19,9 @@ RAG Vision — 地標辨識腳本
   # 從 HackMD 頁面批次辨識（自動抓取頁面內所有圖片）
   python detect.py --hackmd https://hackmd.io/@yillkid/Hy42AcLj-g
 
-  # 指定 API Key
-  python detect.py --key AIzaSy... photo.jpg
-
-環境變數：
-  GEMINI_API_KEY=你的金鑰
+環境變數（.env）：
+  GOOGLE_API_KEY=你的 Gemini 金鑰
+  HACKMD_TOKEN=你的 HackMD API Token（選填，用於讀取私人筆記）
 """
 
 import argparse
@@ -35,6 +33,9 @@ import os
 import re
 import sys
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 # === 讀取地標資料庫 ===
@@ -88,22 +89,29 @@ def build_context(locations):
 
 def load_images_from_hackmd(hackmd_url):
     """從 HackMD 頁面抓取所有圖片 URL"""
-    # 從 URL 取得 note ID
-    # https://hackmd.io/@yillkid/Hy42AcLj-g → Hy42AcLj-g
     match = re.search(r'hackmd\.io/(?:@[^/]+/)?([a-zA-Z0-9_-]+)', hackmd_url)
     if not match:
         print(f"無法解析 HackMD URL：{hackmd_url}")
         return []
 
     note_id = match.group(1)
+    hackmd_token = os.getenv("HACKMD_TOKEN")
 
-    # 嘗試用公開 API 讀取
-    resp = requests.get(f"https://hackmd.io/{note_id}/download")
-    if resp.status_code != 200:
-        # fallback: 直接抓 HTML
-        resp = requests.get(hackmd_url)
-
-    content = resp.text
+    # 優先用 API（支援私人筆記）
+    if hackmd_token:
+        resp = requests.get(
+            f"https://api.hackmd.io/v1/notes/{note_id}",
+            headers={"Authorization": f"Bearer {hackmd_token}"},
+        )
+        if resp.status_code == 200:
+            content = resp.json().get("content", "")
+        else:
+            print(f"  HackMD API 失敗（{resp.status_code}），改用公開下載")
+            resp = requests.get(f"https://hackmd.io/{note_id}/download")
+            content = resp.text
+    else:
+        resp = requests.get(f"https://hackmd.io/{note_id}/download")
+        content = resp.text
 
     # 找所有 HackMD 上傳的圖片
     urls = re.findall(r'https://hackmd\.io/_uploads/[a-zA-Z0-9_-]+\.(?:png|jpg|jpeg)', content)
@@ -183,11 +191,11 @@ def main():
     parser = argparse.ArgumentParser(description="RAG Vision — 地標辨識")
     parser.add_argument("images", nargs="*", help="圖片檔案、資料夾或 URL")
     parser.add_argument("--hackmd", help="從 HackMD 頁面批次載入圖片")
-    parser.add_argument("--key", default=os.getenv("GEMINI_API_KEY"), help="Gemini API Key")
+    parser.add_argument("--key", default=os.getenv("GOOGLE_API_KEY"), help="Gemini API Key")
     args = parser.parse_args()
 
     if not args.key:
-        print("錯誤：請設定 GEMINI_API_KEY 環境變數，或用 --key 指定")
+        print("錯誤：請在 .env 設定 GOOGLE_API_KEY，或用 --key 指定")
         sys.exit(1)
 
     if not args.images and not args.hackmd:
