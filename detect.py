@@ -1,5 +1,5 @@
 """
-虎尾地標辨識腳本
+RAG Vision — 地標辨識腳本
 
 讀取 Google Sheet 地標資料 + 圖片 → 呼叫 Gemini API → 辨識地點
 
@@ -16,6 +16,9 @@
   # 從 URL 辨識
   python detect.py https://hackmd.io/_uploads/B1Yu1w8s-g.png
 
+  # 從 HackMD 頁面批次辨識（自動抓取頁面內所有圖片）
+  python detect.py --hackmd https://hackmd.io/@yillkid/Hy42AcLj-g
+
   # 指定 API Key
   python detect.py --key AIzaSy... photo.jpg
 
@@ -29,6 +32,7 @@ import csv
 import io
 import json
 import os
+import re
 import sys
 import requests
 
@@ -78,6 +82,41 @@ def build_context(locations):
             context += f"   簡介：{info['summary'][:120]}\n"
         context += "\n"
     return context
+
+
+# === HackMD ===
+
+def load_images_from_hackmd(hackmd_url):
+    """從 HackMD 頁面抓取所有圖片 URL"""
+    # 從 URL 取得 note ID
+    # https://hackmd.io/@yillkid/Hy42AcLj-g → Hy42AcLj-g
+    match = re.search(r'hackmd\.io/(?:@[^/]+/)?([a-zA-Z0-9_-]+)', hackmd_url)
+    if not match:
+        print(f"無法解析 HackMD URL：{hackmd_url}")
+        return []
+
+    note_id = match.group(1)
+
+    # 嘗試用公開 API 讀取
+    resp = requests.get(f"https://hackmd.io/{note_id}/download")
+    if resp.status_code != 200:
+        # fallback: 直接抓 HTML
+        resp = requests.get(hackmd_url)
+
+    content = resp.text
+
+    # 找所有 HackMD 上傳的圖片
+    urls = re.findall(r'https://hackmd\.io/_uploads/[a-zA-Z0-9_-]+\.(?:png|jpg|jpeg)', content)
+
+    # 去重但保持順序
+    seen = set()
+    unique = []
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            unique.append(url)
+
+    return unique
 
 
 # === Gemini API ===
@@ -141,9 +180,9 @@ def load_image_from_url(url):
 # === 主程式 ===
 
 def main():
-    parser = argparse.ArgumentParser(description="虎尾地標辨識")
-    parser.add_argument("images", nargs="*", help="圖片檔案或資料夾")
-    parser.add_argument("--url", action="append", default=[], help="圖片 URL")
+    parser = argparse.ArgumentParser(description="RAG Vision — 地標辨識")
+    parser.add_argument("images", nargs="*", help="圖片檔案、資料夾或 URL")
+    parser.add_argument("--hackmd", help="從 HackMD 頁面批次載入圖片")
     parser.add_argument("--key", default=os.getenv("GEMINI_API_KEY"), help="Gemini API Key")
     args = parser.parse_args()
 
@@ -151,8 +190,8 @@ def main():
         print("錯誤：請設定 GEMINI_API_KEY 環境變數，或用 --key 指定")
         sys.exit(1)
 
-    if not args.images and not args.url:
-        print("錯誤：請提供圖片檔案、資料夾或 --url")
+    if not args.images and not args.hackmd:
+        print("錯誤：請提供圖片或 --hackmd URL")
         parser.print_help()
         sys.exit(1)
 
@@ -165,6 +204,15 @@ def main():
     # 收集圖片
     tasks = []
 
+    # 從 HackMD 頁面抓圖
+    if args.hackmd:
+        print(f"從 HackMD 載入圖片：{args.hackmd}")
+        urls = load_images_from_hackmd(args.hackmd)
+        print(f"找到 {len(urls)} 張圖片\n")
+        for url in urls:
+            tasks.append(("url", url))
+
+    # 從參數收集
     for path in args.images:
         if path.startswith("http://") or path.startswith("https://"):
             tasks.append(("url", path))
@@ -177,8 +225,9 @@ def main():
         else:
             print(f"找不到：{path}")
 
-    for url in args.url:
-        tasks.append(("url", url))
+    if not tasks:
+        print("沒有找到任何圖片")
+        sys.exit(1)
 
     # 逐張辨識
     results = []
