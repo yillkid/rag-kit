@@ -261,3 +261,7 @@ pytest tests/test_webhook.py -v
 - 向量化 / embedding retriever — 未來課程再談
 - 非虎尾地標的 app — 留給老師結業後自己加
 - Sheet 欄位改設計 — 另開 issue
+
+## 同學名單
+
+- 黃俊毓 — 我最喜歡的虎尾地標：虎尾驛
