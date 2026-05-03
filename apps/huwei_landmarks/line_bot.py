@@ -81,12 +81,54 @@ def get_pipeline(rebuild: bool = False):
     return _pipeline_cache
 
 
-def handle_image_message(image_bytes: bytes) -> str:
-    """收到使用者傳來的照片 → 回傳地標辨識結果文字。
+def _friendly_reply(name: str, row: dict, api_key: str) -> str:
+    """Stage 2：用 Sheet 欄位 + Gemini 組一段像在地人的介紹（走 REST，不依賴 SDK）。"""
+    bits = []
+    for k in ("簡介 (summary)", "建築風格 (style)", "建築結構 (struct)",
+              "屋頂類型 (roof)", "功能用途 (function)", "材質 (material)",
+              "藝術 (art)", "與談人 (speaker)", "訪談內容 (content)", "主題 (topics)"):
+        v = (row.get(k) or "").strip()
+        if v:
+            bits.append(f"- {k}: {v}")
+    context = "\n".join(bits) if bits else "（資料不多）"
 
-    這個函式就是 LINE webhook handler 要呼叫的核心——把 RAG pipeline
-    包成「吃 bytes，吐人話」的簡單介面。
+    prompt = f"""你是虎尾在地導覽員。遊客剛剛拍了「{name}」的照片傳給你。
+用底下資料，寫一段 80-150 字、像在地人口吻、溫度感足的介紹。
+
+規則：
+- 開頭一句確認「這是{name}」，帶表情符號會加分
+- 若有訪談內容/與談人口述，優先融入（「以前的老闆說…」這種語感）
+- 不要條列、不要標題、不要冒號式結構
+- 結尾可以給一句邀請（「有機會再親自走一趟」之類）
+
+資料：
+{context}
+"""
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        "gemini-2.5-flash-lite:generateContent?key=" + api_key
+    )
+    resp = requests.post(
+        url,
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"response_mime_type": "text/plain"},
+        },
+        timeout=30,
+    )
+    data = resp.json()
+    if "error" in data:
+        raise RuntimeError(data["error"].get("message", "gemini error"))
+    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+
+def handle_image_message(image_bytes: bytes) -> str:
+    """收到使用者傳來的照片 → 回傳遊客版導覽文字（兩階段）。
+
+    Stage 1：pipeline 辨識出地點名稱
+    Stage 2：根據地點名稱撈 Sheet 口述歷史 → Gemini 組在地人口吻介紹
     """
+    # 不在此層做 downsample —— 多角度辨識需要完整解析度，特別是讀招牌文字
     pipeline = get_pipeline()
 
     raw = pipeline.run({"image_bytes": image_bytes, "mime_type": "image/jpeg"})
@@ -97,14 +139,23 @@ def handle_image_message(image_bytes: bytes) -> str:
 
     if not isinstance(result, dict):
         return f"辨識失敗：非預期的回傳格式 {str(result)[:100]}"
-
     if "error" in result:
         return f"辨識失敗：{result['error']}"
 
-    name = result.get("name", "未知地點")
-    reason = result.get("reason", "")
-    confidence = result.get("confidence", "")
-    return f"地點：{name}\n依據：{reason}\n信心：{confidence}"
+    name = result.get("name", "").strip()
+    if not name:
+        return "辨識失敗：回傳缺少地點名稱"
+
+    # Stage 2：用 data source 撈完整 row，再讓 Gemini 組人話
+    try:
+        row = pipeline.data_source.by_key(name)
+        if not row:
+            # Fallback：找不到 row 就退回 debug 格式
+            return f"地點：{name}\n（找不到詳細資料）"
+        api_key = _resolve_api_key()
+        return _friendly_reply(name, row, api_key)
+    except Exception as e:
+        return f"地點：{name}\n（導覽生成失敗：{e}）"
 
 
 def download_line_image(message_id: str, channel_token: str) -> bytes:

@@ -23,7 +23,7 @@ import os
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from linebot.v3 import WebhookParser
@@ -105,8 +105,13 @@ async def healthz() -> PlainTextResponse:
 
 
 @app.post("/webhook")
-async def webhook(request: Request) -> dict:
-    """LINE Platform 的 webhook 進入點。"""
+async def webhook(request: Request, background_tasks: BackgroundTasks) -> dict:
+    """LINE Platform 的 webhook 進入點。
+
+    LINE 要求 webhook 回應 < 10 秒；Gemini 兩階段通常 15-25 秒，因此
+    這裡 verify + parse 後立刻 return 200，實際處理丟到 BackgroundTasks
+    非同步跑，reply_token 在 60 秒內仍可用。
+    """
     signature = _extract_signature(request.headers)
     body_bytes = await request.body()
     body_text = body_bytes.decode("utf-8")
@@ -118,18 +123,22 @@ async def webhook(request: Request) -> dict:
         logger.warning("Invalid signature on /webhook; rejecting request")
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    config = _get_messaging_config()
-    with ApiClient(config) as api_client:
-        messaging_api = MessagingApi(api_client)
-        blob_api = MessagingApiBlob(api_client)
-
-        for event in events:
-            try:
-                _handle_event(event, messaging_api, blob_api)
-            except Exception:  # noqa: BLE001
-                logger.exception("Failed to handle event: %r", event)
+    for event in events:
+        background_tasks.add_task(_process_event_background, event)
 
     return {"status": "ok", "events": len(events)}
+
+
+def _process_event_background(event) -> None:
+    """在 background thread 跑的事件處理。每次開新 ApiClient（thread-safe）。"""
+    try:
+        config = _get_messaging_config()
+        with ApiClient(config) as api_client:
+            messaging_api = MessagingApi(api_client)
+            blob_api = MessagingApiBlob(api_client)
+            _handle_event(event, messaging_api, blob_api)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to handle event in background: %r", event)
 
 
 # ---------- Event routing ----------
