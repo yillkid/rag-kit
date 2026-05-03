@@ -1,0 +1,27 @@
+name: Deploy on merge
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH into host and redeploy
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd /home/yillkid/workspace/4-learn/rag-kit
+            git fetch origin main
+            git reset --hard origin/main
+            docker compose up -d --build line-bot
+            sleep 5
+            curl -fsS http://localhost:8001/healthz && echo " — BOT healthy"
