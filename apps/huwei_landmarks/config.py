@@ -15,7 +15,7 @@ from . import schema
 # 虎尾地標 Google Sheet 的公開 CSV export URL
 DEFAULT_SHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
-    "15Xes5VuHMcg8r-mQesv829VnXU1JR1NUHCtyQfYZhCY/export?format=csv"
+    "1Xcvnj35efvDa1anm7ojOAwRUv6n7hKVhN8UTpb4Fmf8/export?format=csv"
 )
 
 
@@ -85,6 +85,7 @@ def build_pipeline(api_key: str | None = None, csv_path: str | None = None) -> R
     generator = GeminiGenerator(
         api_key=api_key,
         prompt_builder=build_prompt,
+        model="gemini-2.5-flash",
     )
     return RAGPipeline(
         data_source=data_source,
