@@ -43,9 +43,15 @@ def client(monkeypatch):
     """TestClient + 把 pipeline / blob API 替換成假的。"""
     from apps.huwei_landmarks import line_bot, server
 
+    # 假 data source — Stage 2 用 by_key() 撈完整 row
+    class _FakeDataSource:
+        def by_key(self, key):
+            return {"地點名稱 (name)": key, "簡介 (summary)": "測試用簡介"}
+
     # 假 pipeline — 回傳固定 JSON，避免真的打 Gemini
     class _FakePipeline:
         calls: list = []
+        data_source = _FakeDataSource()
 
         def run(self, query):
             _FakePipeline.calls.append(query)
@@ -56,6 +62,14 @@ def client(monkeypatch):
 
     fake_pipeline = _FakePipeline()
     monkeypatch.setattr(line_bot, "get_pipeline", lambda rebuild=False: fake_pipeline)
+    # mock Stage 2 friendly reply,避免實際打 Gemini
+    monkeypatch.setattr(
+        line_bot,
+        "_friendly_reply",
+        lambda name, row, api_key: f"哇,這是{name}!(測試用導覽文字)",
+    )
+    # 滿足 _resolve_api_key 需求
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
 
     # 假 MessagingApiBlob — 不真的去 LINE 下載
     class _FakeBlobApi:
@@ -228,14 +242,14 @@ def test_image_event_triggers_pipeline_and_replies(client):
     assert "image_bytes" in query
     assert isinstance(query["image_bytes"], (bytes, bytearray))
 
-    # 回覆訊息是 handle_image_message 格式化後的字串
+    # 回覆訊息是 Stage 2 friendly reply (透過 monkeypatched _friendly_reply)
     assert len(client.fake_messaging.replies) == 1
     reply = client.fake_messaging.replies[0]
     assert reply["reply_token"] == "rtok-42"
     assert len(reply["messages"]) == 1
     text = reply["messages"][0]
     assert "雲林布袋戲館" in text
-    assert "high" in text
+    assert "測試用導覽文字" in text
 
 
 def test_text_event_returns_polite_unsupported_reply(client):
@@ -269,10 +283,16 @@ def test_empty_events_list_returns_ok(client):
 
 
 def test_line_bot_handle_image_message_formats_result(monkeypatch):
-    """line_bot.handle_image_message 應把 pipeline 的 JSON 轉成人話。"""
+    """line_bot.handle_image_message 應走 Stage 1 + Stage 2 兩階段並回傳 friendly reply。"""
     from apps.huwei_landmarks import line_bot
 
+    class _FakeDataSource:
+        def by_key(self, key):
+            return {"地點名稱 (name)": key, "簡介 (summary)": "有鐵軌、紅磚煙囪"}
+
     class _Fake:
+        data_source = _FakeDataSource()
+
         def run(self, query):
             return json.dumps({
                 "name": "虎尾糖廠",
@@ -281,9 +301,15 @@ def test_line_bot_handle_image_message_formats_result(monkeypatch):
             }, ensure_ascii=False)
 
     monkeypatch.setattr(line_bot, "get_pipeline", lambda rebuild=False: _Fake())
+    monkeypatch.setattr(
+        line_bot,
+        "_friendly_reply",
+        lambda name, row, api_key: f"哇,這是{name}!(導覽)",
+    )
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
     out = line_bot.handle_image_message(b"fake-bytes")
     assert "虎尾糖廠" in out
-    assert "high" in out
+    assert "導覽" in out
 
 
 def test_line_bot_handle_image_message_handles_error(monkeypatch):
