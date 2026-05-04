@@ -143,6 +143,8 @@ def handle_image_message(image_bytes: bytes) -> str:
         return f"辨識失敗：{result['error']}"
 
     name = result.get("name", "").strip()
+    if name == "unknown":
+        return "這張照片不像虎尾的 18 個地標 🤔 要不要再傳一張地標的照片給我？"
     if not name:
         return "辨識失敗：回傳缺少地點名稱"
 
